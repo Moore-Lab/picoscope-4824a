@@ -11,7 +11,16 @@
 'use strict';
 
 const CHANNELS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-const COLORS = ['#5cf', '#fd6', '#f86', '#8f8', '#c9f', '#6cc', '#fa8', '#aaf'];
+// SIX digits, not the shorter '#5cf' form, and that is load-bearing: the
+// envelope band below is filled with `color + '38'` to get 22% alpha, and
+// '#5cf38' is a 5-digit hex -- not a valid CSS colour. An invalid fillStyle
+// is a SILENT no-op in Canvas2D, so the band kept whatever fillStyle the
+// axis labels left behind ('#666') and painted flat opaque grey over the
+// grid instead of a translucent channel-coloured band. Expanding to 6
+// digits makes `color + '38'` a valid 8-digit hex. Same colours as before
+// (3-digit hex expands by doubling each digit), so the traces are unchanged.
+const COLORS = ['#55ccff', '#ffdd66', '#ff8866', '#88ff88',
+                '#cc99ff', '#66cccc', '#ffaa88', '#aaaaff'];
 const RANGES = ['R_10MV', 'R_20MV', 'R_50MV', 'R_100MV', 'R_200MV', 'R_500MV',
                 'R_1V', 'R_2V', 'R_5V', 'R_10V', 'R_20V', 'R_50V'];
 const RANGE_LABEL = { R_10MV: '±10 mV', R_20MV: '±20 mV', R_50MV: '±50 mV',
@@ -214,6 +223,8 @@ function drawPlot() {
 
     // Envelope band: min..max per bin. This is the point of the whole design —
     // a spike far shorter than a bin still paints, because the bin kept it.
+    // '38' is the alpha byte (22%), which REQUIRES color to be 6-digit hex --
+    // see the note on COLORS. A 3-digit color here silently paints opaque grey.
     ctx.fillStyle = color + '38';
     ctx.beginPath();
     ctx.moveTo(x(0), y(t.max[0]));
