@@ -10,9 +10,11 @@ Newest entries first. Keep entries short and factual; convert relative dates to 
 
 ## 2026-09-09 — Subsystem built; simulator; mounted in the panel
 
-**State of the repo: no commits yet.** Everything below is in the working tree only. An
-initial commit here, plus a submodule pointer from `xsphere-daq`, is the next step — until
-then none of this survives a clean checkout.
+**Initial commit: `6c8463b`** (19 files, 5,764 lines), on `main` — the branch was renamed
+from `master` to match the rest of the project. Registered as a submodule from `xsphere-daq`
+at that commit. Not yet pushed: `github.com/Moore-Lab/picoscope-4824a` does not exist yet,
+so until it is created and this is pushed, a clean `clone --recurse-submodules` of the top
+level cannot fetch this.
 
 Built this session (preceding context) — `picoscope_4824a/`:
 
@@ -56,5 +58,6 @@ shorter than `window_s × bin_rate_hz`, and `bin_rate_hz` in the payload is the 
 rate, not `len(min)/window_s`. The front end scales its x-axis by `window_s`, never by
 `bin_rate_hz`, so the decimation cannot compress the trace.
 
-**Next.** Initial commit + submodule pointer. The live plot has been verified as data but
-not as pixels — see the note in the top-level log.
+**Next.** Create the GitHub repo and push. A README is still missing — every other repo
+here has one, with the session log linked from a Status section. The live plot has been
+verified as data but not as pixels — see the note in the top-level log.
