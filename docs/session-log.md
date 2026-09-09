@@ -8,6 +8,28 @@ Newest entries first. Keep entries short and factual; convert relative dates to 
 
 ---
 
+## 2026-09-09 (later) — Envelope band fix; README
+
+- **The envelope band was painting flat opaque grey** (`181d370`). `COLORS` held 3-digit
+  hex, and `drawPlot` builds the band fill by concatenating an alpha byte: `color + '38'`.
+  That gives `'#5cf38'`, a 5-digit hex, which is not a valid CSS colour — and an invalid
+  `fillStyle` is a **silent no-op** in Canvas2D, so the band kept whatever the axis labels
+  left behind (`'#666'`). Two consequences, both invisible in the data and findable only in
+  pixels: the band hid the grid, and with several channels enabled every band was the same
+  grey, so later channels completely obscured earlier ones instead of blending. All eight
+  channel colours were affected. Expanding `COLORS` to 6-digit makes `color + '38'` a valid
+  8-digit hex; the colours are unchanged, since 3-digit hex expands by doubling each digit.
+  Both sites now say the digit count is load-bearing, so it does not get "tidied" back.
+  Verified by reading the canvas bitmap with two channels streaming: `rgba(87,205,255,56)`
+  for A, `rgba(255,223,100,56)` for B, overlap at alpha 100, `#1e1e1e` grid visible through
+  it. The same pixels previously read `(102,102,102,255)`.
+- **README** (`2d5e11d`) — leads with why the repo is shaped as it is (the scope is
+  single-owner, so one process holds the handle and the CLI is a client of it), then the
+  simulator, real hardware, the 29 commands by group, why streaming keeps a min/max envelope
+  instead of decimating, the HDF5 layout, and the clean-shutdown warning. Every command in
+  it was run first; two were wrong on the first pass (`--sim` not `--simulate`, and `pico`
+  is only the argparse prog name — there is no packaging yet).
+
 ## 2026-09-09 — Subsystem built; simulator; mounted in the panel
 
 **Initial commit: `6c8463b`** (19 files, 5,764 lines), on `main` — the branch was renamed
