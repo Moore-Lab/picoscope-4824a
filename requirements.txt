@@ -1,0 +1,31 @@
+# picoscope-4824a dependencies. Install with: pip install -r requirements.txt
+#
+# The simulator (picoscope_4824a.sim) needs only numpy, so the driver, the CLI
+# and the web page all run end-to-end with no scope attached and no PicoSDK
+# installed. Talking to a real 4824A is the part with a requirement that pip
+# cannot satisfy -- see PicoSDK at the bottom.
+
+# Sample maths everywhere: ADC counts <-> volts, the min/max/mean display
+# envelope, and the streaming ring buffers.
+numpy
+
+# Web control page (picoscope_4824a.webapp)
+fastapi
+uvicorn
+
+# Stream recording to HDF5 (recorder.py)
+#
+# Imported late, inside the writer, so it is needed only if you actually
+# record: channel setup, live streaming and block capture all work without it.
+# A missing h5py costs you the recording, never the panel.
+h5py
+
+# NATIVE DRIVER -- REQUIRED FOR REAL HARDWARE ONLY
+#
+# ps4000a.dll ships with Pico Technology's PicoSDK and is NOT a pip package:
+# install PicoSDK (64-bit, to match the interpreter) from picotech.com/downloads.
+# picoscope_4824a.ps4000a loads it by ctypes and raises PicoSDKNotFound when it
+# is absent; the panel turns that into a tab that explains itself rather than a
+# panel that will not start, so an SDK-less machine still runs everything else.
+#
+# Nothing here is needed for --scope sim.

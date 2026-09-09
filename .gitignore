@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Stream recordings and local presets — data and rig state, not source.
+# Keep the folders (and anything documenting them) so a fresh clone has
+# somewhere to write without the app having to guess.
+recordings/*
+!recordings/.gitkeep
+!recordings/README.md
+presets/*
+!presets/.gitkeep
+!presets/README.md
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.csv
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local tooling
+.claude/

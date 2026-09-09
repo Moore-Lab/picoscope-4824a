@@ -1,0 +1,117 @@
+/* PicoScope 4824A panel — same visual language as the xsphere-daq shell
+   (xsphere_daq/static/shell.css) and the camera dock, so the pane looks
+   native when mounted at /scope. */
+
+html, body { height: 100%; }
+body { margin:0; background:#111; color:#ddd; font-family:system-ui,sans-serif;
+       font-size:14px; display:flex; flex-direction:column; }
+
+header { padding:8px 14px; background:#000; display:flex; align-items:center;
+         gap:10px; flex-wrap:wrap; flex:0 0 auto; }
+header b { font-size:16px; }
+.sub { color:#888; font-size:12px; }
+.status { color:#7cf; font-size:12px; margin-left:auto; }
+.status.err { color:#c77; }
+.status.busy { color:#fd8; }
+
+a { color:#8cf; text-decoration:none; }
+a:hover { text-decoration:underline; }
+code { color:#9d9; font-family:ui-monospace,Consolas,monospace; }
+
+button { background:#264; color:#dfd; border:1px solid #486; border-radius:4px;
+         padding:6px 10px; cursor:pointer; font-size:13px; }
+button:hover:not(:disabled) { background:#386; }
+button:disabled { opacity:.45; cursor:default; }
+button.ghost { background:#222; color:#bbb; border-color:#444; }
+button.ghost:hover:not(:disabled) { background:#333; }
+button.warn { background:#622; color:#fdd; border-color:#a55; }
+button.warn:hover:not(:disabled) { background:#833; }
+:focus-visible { outline:2px solid #4a8; outline-offset:1px; }
+
+input, select { background:#1a1a1a; color:#ddd; border:1px solid #444;
+                border-radius:4px; padding:4px 6px; font-size:13px;
+                font-family:inherit; }
+input:focus, select:focus { border-color:#4a8; }
+
+.badge { font-size:11px; border-radius:10px; padding:2px 8px; }
+.warn-badge { background:#3a2a14; border:1px solid #a83; color:#fd8; }
+
+/* ------------------------------------------------------------- action bar */
+.bar { display:flex; align-items:center; gap:8px; padding:8px 14px;
+       background:#161616; border-bottom:1px solid #262626; flex:0 0 auto;
+       flex-wrap:wrap; }
+.bar .sep { width:1px; height:20px; background:#333; margin:0 4px; }
+.bar .grow { flex:1; }
+
+/* Recording is the one state that costs data if missed, so it is the loudest
+   thing on the page — same reasoning as the dock's global recording pill. */
+.recpill { display:flex; align-items:center; gap:8px; background:#3a1414;
+           border:1px solid #a33; color:#fdd; font-size:12px;
+           padding:4px 12px; margin:0 14px 0; border-radius:12px;
+           align-self:flex-start; }
+/* MUST follow the rule above: `display:flex` and the UA's `[hidden]{display:none}`
+   have equal specificity and author styles win, so `hidden` alone would leave
+   a stale pill claiming a recording is still running. */
+.recpill[hidden] { display:none; }
+.recpill .dot { width:8px; height:8px; border-radius:50%; background:#e55;
+                animation:pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+
+/* ---------------------------------------------------------------- layout */
+main { flex:1; display:flex; min-height:0; }
+.plot-wrap { flex:1; display:flex; flex-direction:column; padding:10px 14px;
+             min-width:0; }
+#plot { flex:1; width:100%; min-height:220px; background:#0b0b0b;
+        border:1px solid #262626; border-radius:6px; }
+.plot-legend { display:flex; gap:14px; flex-wrap:wrap; padding:8px 2px 2px; }
+.plot-legend span { display:flex; align-items:center; gap:6px; font-size:12px;
+                    color:#bbb; }
+.plot-legend i { width:11px; height:11px; border-radius:2px; display:inline-block; }
+.plot-note { padding:0 2px; }
+
+aside { width:340px; flex:0 0 340px; border-left:1px solid #262626;
+        overflow-y:auto; padding:6px 12px 24px; }
+@media (max-width:900px) {
+  main { flex-direction:column; }
+  aside { width:auto; flex:0 0 auto; border-left:none;
+          border-top:1px solid #262626; }
+}
+
+details { border-bottom:1px solid #222; padding:6px 0; }
+details summary { cursor:pointer; font-weight:600; padding:4px 0; color:#cde; }
+details summary:hover { color:#fff; }
+
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:8px 0; }
+.grid label { display:flex; flex-direction:column; gap:3px; font-size:12px;
+              color:#999; }
+.grid label input, .grid label select { width:100%; box-sizing:border-box; }
+.row { display:flex; gap:8px; padding:6px 0; }
+
+/* -------------------------------------------------------------- channels */
+.channels { display:flex; flex-direction:column; gap:4px; padding:8px 0; }
+.chan { display:grid; grid-template-columns:auto auto 1fr auto; gap:6px;
+        align-items:center; padding:3px 4px; border-radius:4px; }
+.chan:hover { background:#181818; }
+.chan .swatch { width:10px; height:10px; border-radius:2px; }
+.chan .name { font-weight:600; width:14px; }
+.chan select { font-size:12px; padding:2px 4px; }
+.chan.off { opacity:.4; }
+
+/* ------------------------------------------------------------------ plan */
+.plan { font-size:12px; color:#9b9; background:#141814; border:1px solid #263;
+        border-radius:4px; padding:7px 9px; margin-top:6px; line-height:1.5; }
+.plan.bad { color:#fbb; background:#1d1414; border-color:#733; }
+.plan b { color:#cec; }
+.plan.bad b { color:#fcc; }
+
+/* ---------------------------------------------------------------- tables */
+table { width:100%; border-collapse:collapse; font-size:12px; }
+table td { padding:3px 4px; border-bottom:1px solid #1e1e1e; }
+table td:first-child { color:#888; width:20px; font-weight:600; }
+table td.num { text-align:right; font-family:ui-monospace,Consolas,monospace;
+               color:#cdc; }
+
+.commands { font-size:12px; }
+.commands .cgroup { color:#7cf; margin:8px 0 3px; font-weight:600; }
+.commands .cmd { padding:2px 0 2px 8px; color:#aaa; }
+.commands .cmd code { color:#9d9; }

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PicoScope 4824A</title>
+<link rel="stylesheet" href="static/scope.css">
+</head>
+<body>
+
+<header>
+  <b>PicoScope 4824A</b>
+  <span class="sub" id="identity">not connected</span>
+  <span id="usbwarn" class="badge warn-badge" hidden></span>
+  <span class="status" id="status">idle</span>
+</header>
+
+<div class="bar">
+  <button id="btn-open">Connect</button>
+  <button id="btn-close" class="ghost" disabled>Disconnect</button>
+  <span class="sep"></span>
+  <button id="btn-stream" disabled>Start stream</button>
+  <button id="btn-stream-stop" class="ghost" disabled>Stop stream</button>
+  <span class="sep"></span>
+  <button id="btn-record" class="warn" disabled>Record</button>
+  <button id="btn-record-stop" class="ghost" disabled>Stop recording</button>
+  <span class="grow"></span>
+  <span class="sub" id="disk"></span>
+</div>
+
+<div id="recpill" class="recpill" hidden>
+  <span class="dot"></span><span id="rectext">recording</span>
+</div>
+
+<main>
+  <section class="plot-wrap">
+    <canvas id="plot"></canvas>
+    <div class="plot-legend" id="legend"></div>
+    <div class="plot-note sub" id="plotnote">
+      Live min/max envelope. A transient shorter than one bin still shows,
+      because each bin keeps both extremes.
+    </div>
+  </section>
+
+  <aside>
+
+    <details open>
+      <summary>Channels</summary>
+      <div id="channels" class="channels"></div>
+    </details>
+
+    <details open>
+      <summary>Streaming</summary>
+      <div class="grid">
+        <label>Raw rate
+          <select id="s-rate">
+            <option value="1000">1 kS/s</option>
+            <option value="10000">10 kS/s</option>
+            <option value="100000">100 kS/s</option>
+            <option value="1000000" selected>1 MS/s</option>
+            <option value="2000000">2 MS/s</option>
+            <option value="5000000">5 MS/s</option>
+            <option value="10000000">10 MS/s</option>
+          </select>
+        </label>
+        <label>Downsample
+          <select id="s-ratio">
+            <option value="1">1 — every sample</option>
+            <option value="10">10</option>
+            <option value="100">100</option>
+            <option value="1000" selected>1000</option>
+            <option value="10000">10 000</option>
+            <option value="20000">20 000</option>
+            <option value="100000">100 000</option>
+          </select>
+        </label>
+        <label>Mode
+          <select id="s-mode">
+            <option value="AGGREGATE" selected>Aggregate (min/max)</option>
+            <option value="DECIMATE">Decimate</option>
+            <option value="AVERAGE">Average</option>
+            <option value="NONE">None — full rate</option>
+          </select>
+        </label>
+        <label>View window
+          <select id="s-window">
+            <option value="5">5 s</option>
+            <option value="10" selected>10 s</option>
+            <option value="30">30 s</option>
+            <option value="60">1 min</option>
+            <option value="300">5 min</option>
+          </select>
+        </label>
+      </div>
+      <div id="plan" class="plan"></div>
+    </details>
+
+    <details open>
+      <summary>Recording</summary>
+      <div class="grid">
+        <label>Name <input id="r-name" value="stream"></label>
+        <label>Duration
+          <select id="r-duration">
+            <option value="0" selected>until stopped</option>
+            <option value="60">1 minute</option>
+            <option value="600">10 minutes</option>
+            <option value="3600">1 hour</option>
+            <option value="28800">8 hours</option>
+            <option value="86400">1 day</option>
+            <option value="604800">1 week</option>
+          </select>
+        </label>
+        <label>Format
+          <select id="r-format">
+            <option value="hdf5" selected>HDF5 (.h5)</option>
+            <option value="raw">Raw int16 (.bin)</option>
+          </select>
+        </label>
+        <label>Note <input id="r-note" placeholder="optional"></label>
+      </div>
+      <div id="recstats" class="sub"></div>
+    </details>
+
+    <details>
+      <summary>Signal generator</summary>
+      <div class="grid">
+        <label>Wave
+          <select id="g-wave">
+            <option>SINE</option><option>SQUARE</option><option>TRIANGLE</option>
+            <option>RAMP_UP</option><option>RAMP_DOWN</option><option>SINC</option>
+            <option>GAUSSIAN</option><option>HALF_SINE</option>
+            <option>DC_VOLTAGE</option><option>WHITE_NOISE</option>
+          </select>
+        </label>
+        <label>Frequency (Hz) <input id="g-freq" type="number" value="1000" min="0" max="1000000"></label>
+        <label>Amplitude (Vpp) <input id="g-amp" type="number" value="2" min="0" max="4" step="0.1"></label>
+        <label>Offset (V) <input id="g-off" type="number" value="0" step="0.1"></label>
+      </div>
+      <div class="row">
+        <button id="btn-siggen" disabled>Apply</button>
+        <button id="btn-siggen-off" class="ghost" disabled>Off</button>
+      </div>
+      <div class="sub">Limits on this unit: 4 Vpp, 1 MHz. Loop the output back
+        into an input to exercise the whole acquisition chain.</div>
+    </details>
+
+    <details>
+      <summary>Measurements</summary>
+      <table id="measure"><tbody></tbody></table>
+    </details>
+
+    <details>
+      <summary>Recordings on disk</summary>
+      <div id="recordings" class="sub"></div>
+    </details>
+
+    <details>
+      <summary>Command reference</summary>
+      <div class="sub">Every control on this page is one of these commands.
+        The CLI (<code>pico &lt;command&gt;</code>) and this UI call the same
+        API, so they cannot drift apart.</div>
+      <div id="commands" class="commands"></div>
+    </details>
+
+  </aside>
+</main>
+
+<script src="static/scope.js"></script>
+</body>
+</html>
