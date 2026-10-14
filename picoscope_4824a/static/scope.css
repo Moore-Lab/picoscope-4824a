@@ -33,6 +33,12 @@ input, select { background:#1a1a1a; color:#ddd; border:1px solid #444;
                 font-family:inherit; }
 input:focus, select:focus { border-color:#4a8; }
 
+/* An author `display` beats the UA's `[hidden] { display:none }` — equal
+   specificity, author wins — so any flex or grid container with `hidden` set
+   would stay on screen. That has bitten this page three times (the recording
+   pill, the toolbar groups, the band-pass row); one rule ends it. */
+[hidden] { display:none !important; }
+
 .badge { font-size:11px; border-radius:10px; padding:2px 8px; }
 .warn-badge { background:#3a2a14; border:1px solid #a83; color:#fd8; }
 
@@ -42,6 +48,22 @@ input:focus, select:focus { border-color:#4a8; }
        flex-wrap:wrap; }
 .bar .sep { width:1px; height:20px; background:#333; margin:0 4px; }
 .bar .grow { flex:1; }
+.bar .group { display:inline-flex; align-items:center; gap:8px; }
+/* Same trap as .recpill below: an author `display` beats the UA's [hidden],
+   so without this the scope and roll button groups would both always show. */
+.bar .group[hidden] { display:none; }
+
+/* Segmented control: the Scope/Roll switch and the trigger mode. */
+.seg { display:inline-flex; border:1px solid #444; border-radius:5px;
+       overflow:hidden; }
+.seg-btn { background:#1a1a1a; color:#aaa; border:none; border-radius:0;
+           padding:5px 12px; }
+.seg-btn + .seg-btn { border-left:1px solid #444; }
+.seg-btn:hover:not(:disabled) { background:#262626; }
+.seg-btn[aria-checked="true"] { background:#264; color:#dfd; }
+.seg-btn[aria-checked="true"]:hover:not(:disabled) { background:#2d5a3c; }
+.seg-wide { display:flex; margin:8px 0 2px; }
+.seg-wide .seg-btn { flex:1; }
 
 /* Recording is the one state that costs data if missed, so it is the loudest
    thing on the page — same reasoning as the dock's global recording pill. */
@@ -85,11 +107,20 @@ details summary:hover { color:#fff; }
 .grid label { display:flex; flex-direction:column; gap:3px; font-size:12px;
               color:#999; }
 .grid label input, .grid label select { width:100%; box-sizing:border-box; }
+.grid .span2 { grid-column:1 / -1; }
+.grid .span2 > span { display:flex; justify-content:space-between; }
+.grid .val { color:#cdc; font-family:ui-monospace,Consolas,monospace; }
+/* A checkbox belongs beside its words, not above them. */
+.grid label.check { flex-direction:row; align-items:center; gap:6px; }
+.grid label.check input { width:auto; }
+.grid input[type="range"] { padding:0; accent-color:#4a8; }
 .row { display:flex; gap:8px; padding:6px 0; }
 
 /* -------------------------------------------------------------- channels */
 .channels { display:flex; flex-direction:column; gap:4px; padding:8px 0; }
-.chan { display:grid; grid-template-columns:auto auto 1fr auto; gap:6px;
+/* Five cells: checkbox, swatch, name, range, coupling. With four columns the
+   coupling select wrapped onto a second line under the checkbox. */
+.chan { display:grid; grid-template-columns:auto auto 1fr auto auto; gap:6px;
         align-items:center; padding:3px 4px; border-radius:4px; }
 .chan:hover { background:#181818; }
 .chan .swatch { width:10px; height:10px; border-radius:2px; }
@@ -115,3 +146,20 @@ table td.num { text-align:right; font-family:ui-monospace,Consolas,monospace;
 .commands .cgroup { color:#7cf; margin:8px 0 3px; font-weight:600; }
 .commands .cmd { padding:2px 0 2px 8px; color:#aaa; }
 .commands .cmd code { color:#9d9; }
+
+/* ------------------------------------------------------ recordings library */
+.filelist { font-size:12px; max-height:230px; overflow-y:auto; margin:6px 0; }
+.filelist .frow { display:grid; grid-template-columns:auto 1fr auto; gap:6px;
+                  align-items:center; padding:3px 4px; border-radius:4px;
+                  cursor:pointer; }
+.filelist .frow:hover { background:#181818; }
+.filelist .frow.on { background:#17251d; }
+.filelist .frow .meta { color:#777; font-size:11px; }
+.filelist .frow .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.filelist .folder .nm::before { content:"📁 "; }
+.filelist .empty { color:#666; padding:4px; }
+
+/* The two stacked panels the DAQ and Files views draw into. */
+#plot2 { flex:1; width:100%; min-height:160px; background:#0b0b0b;
+         border:1px solid #262626; border-radius:6px; margin-top:8px; }
+#plot2[hidden] { display:none; }

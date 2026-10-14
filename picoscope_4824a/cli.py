@@ -66,6 +66,9 @@ def _add_param(parser: argparse.ArgumentParser, param: Param) -> None:
         help_text = f"{help_text} [{param.unit}]".strip()
     if param.default is not None:
         help_text = f"{help_text} (default: {param.default})".strip()
+    # argparse %-formats help text, so a literal '%' (a unit, say) must be
+    # doubled or --help dies with "unsupported format character".
+    help_text = help_text.replace("%", "%%")
 
     kwargs: dict[str, Any] = {"help": help_text, "dest": param.name,
                               "default": None}
@@ -236,10 +239,12 @@ def _call_local(cmd: Command, params: dict, serial: Optional[str],
                 return opened
         handler = getattr(controller, cmd.handler)
         result = handler(**params)
-        if cmd.group == "stream" and cmd.name == "stream-start" and result.get("ok"):
+        held = {"stream-start": "stream", "sweep-start": "scope"}.get(cmd.name)
+        if held and result.get("ok"):
             result["warning"] = (
-                "started in --local mode: the stream stops when this command "
-                "exits. Run 'pico serve' and drop --local to keep it running.")
+                f"started in --local mode: the {held} stops when this command "
+                "exits. Run 'pico serve' and drop --local to keep it running. "
+                "(For a one-shot triggered capture, use 'capture'.)")
         return result
     finally:
         controller.shutdown()

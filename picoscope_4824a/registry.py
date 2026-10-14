@@ -98,6 +98,88 @@ RATIO_MODES = ("NONE", "AGGREGATE", "DECIMATE", "AVERAGE")
 DIRECTIONS = ("ABOVE", "BELOW", "RISING", "FALLING", "RISING_OR_FALLING")
 WAVES = ("SINE", "SQUARE", "TRIANGLE", "RAMP_UP", "RAMP_DOWN", "SINC",
          "GAUSSIAN", "HALF_SINE", "DC_VOLTAGE", "WHITE_NOISE")
+SWEEP_MODES = ("auto", "normal", "single", "none")
+DAQ_TRIGGERS = ("off", "auto", "normal")
+SPECTRUM_KINDS = ("asd", "psd")
+
+#: The trigger half of a DAQ run, shared by daq-start and daq-plan. Off by
+#: default: the NI DAQ this mode mirrors free-runs, and most runs want that.
+DAQ_TRIGGER_PARAMS = (
+    Param("trigger", "enum",
+          "off: start each acquisition straight away, back to back (what the "
+          "usphere NI DAQ does). auto: wait for a trigger but record anyway "
+          "after auto_ms. normal: wait for a trigger, however long it takes.",
+          choices=DAQ_TRIGGERS, default="off"),
+    Param("source", "enum", "Channel to trigger on.", choices=CHANNELS,
+          default="A"),
+    Param("level", "float", "Trigger threshold.", default=0.0, unit="V"),
+    Param("direction", "enum", "Edge or level sense.", choices=DIRECTIONS,
+          default="RISING"),
+    Param("pretrigger", "float",
+          "How much of each record to keep from before the trigger.",
+          default=0.0, unit="%"),
+    Param("auto_ms", "int", "How long auto mode waits before recording anyway.",
+          default=1000, unit="ms"),
+)
+
+DAQ_RUN_PARAMS = (
+    Param("bits", "int",
+          "Record length as a power of two: 2^bits samples per file, the way "
+          "usphere-DAQ specifies it. 20 is 1,048,576.", default=20),
+    Param("rate", "float",
+          "Sample rate per channel. The nearest timebase the scope can give is "
+          "used, and that actual rate is what every file records.",
+          default=10000.0, unit="Hz"),
+    Param("files", "int",
+          "How many acquisitions to take. 0 runs until stopped.", default=1),
+    Param("name", "str", "Root name for the files: <name>_0.h5, <name>_1.h5, ...",
+          default="run"),
+    Param("directory", "str",
+          "Where to write. Relative paths sit under the recordings folder. "
+          "Omit for a new folder per run, which is what makes 'average this "
+          "run' a folder."),
+) + DAQ_TRIGGER_PARAMS
+
+BAND_PARAMS = (
+    Param("f_low", "float", "Band-pass lower corner. Omit for no filter.",
+          unit="Hz"),
+    Param("f_high", "float", "Band-pass upper corner, below Nyquist.", unit="Hz"),
+    Param("order", "int", "Butterworth order.", default=3),
+)
+
+#: The scope's front panel, shared by sweep-start and sweep-set. Every one is
+#: optional and has NO default here on purpose: an omitted setting stays as it
+#: is, so `sweep-set --level 0.5` moves the level and nothing else. (A default
+#: would be passed on every call and quietly reset the rest.)
+SWEEP_SETTINGS = (
+    Param("mode", "enum",
+          "auto: capture anyway if no trigger arrives in time, so the trace "
+          "never freezes (the usual choice). normal: capture only on a "
+          "trigger and hold the last sweep meanwhile. single: stop after one "
+          "triggered sweep. none: trigger off, free-run. Unchanged if omitted.",
+          choices=SWEEP_MODES),
+    Param("source", "enum", "Channel to trigger on. It must be switched on. "
+                            "Unchanged if omitted.", choices=CHANNELS),
+    Param("level", "float", "Trigger threshold. Unchanged if omitted.", unit="V"),
+    Param("direction", "enum",
+          "RISING / FALLING / RISING_OR_FALLING fire on an edge through the "
+          "level; ABOVE / BELOW fire while the signal is past it. Unchanged if "
+          "omitted.", choices=DIRECTIONS),
+    Param("time_per_div", "float",
+          "Horizontal scale; a sweep spans 10 divisions. 1e-8 to 10. "
+          "Unchanged if omitted.", unit="s/div"),
+    Param("position", "float",
+          "Where the trigger sits across the screen: 0 = left edge, 50 = "
+          "centre, 100 = right edge. Unchanged if omitted.", unit="%"),
+    Param("samples", "int",
+          "Target samples per sweep. At fast timebases the sample rate "
+          "ceiling (80 MS/s with 1-4 channels on) allows fewer. Unchanged if "
+          "omitted."),
+    Param("auto_ms", "int",
+          "How long auto mode waits before capturing untriggered. 0 = "
+          "automatic: the longer of 200 ms and one sweep. Max 32767 (the "
+          "driver's limit). Unchanged if omitted.", unit="ms"),
+)
 
 
 COMMANDS: tuple[Command, ...] = (
@@ -226,6 +308,152 @@ COMMANDS: tuple[Command, ...] = (
                "current configuration.",
         params=(Param("rate", "float", "Rate to resolve to a timebase.",
                       default=1e6, unit="Hz"),),
+    ),
+
+    # --- triggered sweeps (scope mode) -------------------------------------
+    Command(
+        name="sweep-start", group="sweep", handler="start_sweep", mutates=True,
+        summary="Run the scope: repeated triggered sweeps (Run / Single).",
+        detail="The bench-scope view: arm, wait for the trigger, capture the "
+               "window around it, repeat — so a repetitive signal stands "
+               "still. Settings given here change first; the rest stand. "
+               "Uses block mode, so it cannot run alongside streaming. The "
+               "trigger lands exactly on the sweep's time zero.",
+        params=SWEEP_SETTINGS,
+    ),
+    Command(
+        name="sweep-stop", group="sweep", handler="stop_sweep", mutates=True,
+        summary="Stop the scope. The last sweep stays available.",
+    ),
+    Command(
+        name="sweep-set", group="sweep", handler="set_sweep", mutates=True,
+        summary="Change trigger or timebase settings; a running scope re-arms.",
+        detail="Only the settings you give change. A capture waiting for a "
+               "trigger is released and re-armed with the new ones at once; "
+               "a stopped scope keeps them for its next run.",
+        params=SWEEP_SETTINGS,
+    ),
+    Command(
+        name="sweep-trace", group="sweep", handler="sweep_trace",
+        summary="The latest sweep and the scope's state.",
+        detail="Per-channel min/max per bin (so a one-sample glitch still "
+               "shows), times relative to the trigger, and measurements: "
+               "Vpp, mean, RMS and — when it can be trusted — frequency. "
+               "state.indicator is the scope's corner status: trig'd, auto, "
+               "wait, armed, free-run, stop or error.",
+        params=(
+            Param("since", "int",
+                  "Only include trace data if a sweep newer than this id "
+                  "exists. The state is always included.", default=-1),
+            Param("max_points", "int", "Bins per channel.", default=1000),
+        ),
+    ),
+    Command(
+        name="sweep-save", group="sweep", handler="save_sweep", mutates=True,
+        summary="Save the last sweep, every sample, to the recordings folder.",
+        detail="Time is measured from the trigger. HDF5 keeps raw ADC counts "
+               "plus the ranges and trigger settings; CSV is volts.",
+        params=(
+            Param("name", "str", "Name stem for the file.", default="sweep"),
+            Param("format", "enum", "Output format.", choices=("hdf5", "csv"),
+                  default="hdf5"),
+        ),
+    ),
+
+    # --- DAQ mode ---------------------------------------------------------
+    Command(
+        name="daq-start", group="daq", handler="start_daq", mutates=True,
+        summary="Record a run: N acquisitions of 2^bits samples, as HDF5 files.",
+        detail="The scope used the way usphere-DAQ uses its NI card. Each "
+               "acquisition is one file in that project's schema (schema 3, "
+               "beads/data/pos_data, channel A as ai0), so the usphere viewer "
+               "and analysis scripts read these files without knowing a "
+               "PicoScope wrote them. No trigger by default: acquisitions run "
+               "back to back, as the NI DAQ does.",
+        params=DAQ_RUN_PARAMS + (
+            Param("preview", "bool",
+                  "Reduce each file to a waveform and a spectrum for the page, "
+                  "and keep a running PSD average over the run. Costs a little "
+                  "time between acquisitions.", default=True),
+        ),
+    ),
+    Command(
+        name="daq-stop", group="daq", handler="stop_daq", mutates=True,
+        summary="Stop the run after the acquisition in progress.",
+    ),
+    Command(
+        name="daq-status", group="daq", handler="daq_status",
+        summary="Run progress: phase, files written, disk, the current record.",
+    ),
+    Command(
+        name="daq-plan", group="daq", handler="plan_daq",
+        summary="Cost a run before starting it: real rate, file size, duration.",
+        detail="Reports the rate the timebase actually gives (which is what the "
+               "files will record), the size per file and for the run, and "
+               "warns about anything that would quietly spoil the data — a "
+               "rounded rate, mixed channel ranges, or a disk that will fill.",
+        params=DAQ_RUN_PARAMS,
+    ),
+    Command(
+        name="daq-preview", group="daq", handler="daq_preview",
+        summary="The last acquisition's waveform and spectrum, with the run state.",
+        detail="What the page draws after each file: a min/max envelope of the "
+               "record, its ASD, and the PSD-averaged ASD over the run so far. "
+               "'since' skips a preview already seen.",
+        params=(
+            Param("since", "int", "Only return a preview newer than this id.",
+                  default=-1),
+            Param("max_points", "int", "Points per curve.", default=1200),
+            Param("kind", "enum", "Spectrum to return.", choices=SPECTRUM_KINDS,
+                  default="asd"),
+        ),
+    ),
+
+    # --- the recordings library -------------------------------------------
+    Command(
+        name="files", group="files", handler="list_files",
+        summary="Browse the recordings folder: runs, and the files in them.",
+        params=(
+            Param("dir", "str", "Folder to list, under the recordings folder."),
+            Param("limit", "int", "Most files to return.", default=500),
+        ),
+    ),
+    Command(
+        name="file-waveform", group="files", handler="file_waveform",
+        summary="Time traces from saved files, reduced for plotting.",
+        detail="Min and max per bin, so a one-sample glitch survives being "
+               "drawn a thousand pixels wide.",
+        params=(
+            Param("paths", "str", "Files, comma-separated, under the recordings "
+                                  "folder.", required=True),
+            Param("channels", "str",
+                  "Channels, comma-separated: A-H, or ai0-ai31. Omit for every "
+                  "channel the file recorded."),
+            Param("max_points", "int", "Points per trace.", default=1500),
+        ) + BAND_PARAMS,
+    ),
+    Command(
+        name="file-spectrum", group="files", handler="file_spectrum",
+        summary="ASD or PSD from saved files, per file or averaged over a run.",
+        detail="Welch, with nperseg = 2^nperseg_bits — the same convention as "
+               "usphere-DAQ's viewer, so the numbers match. Averaging means "
+               "averaging the PSDs across the files and taking the root at the "
+               "end; averaging ASDs instead would bias the result low.",
+        params=(
+            Param("paths", "str", "Files, comma-separated."),
+            Param("dir", "str",
+                  "Average over every .h5 in this folder — a whole run."),
+            Param("channels", "str", "Channels, comma-separated. Omit for all."),
+            Param("kind", "enum", "ASD (V/√Hz) or PSD (V²/Hz).",
+                  choices=SPECTRUM_KINDS, default="asd"),
+            Param("nperseg_bits", "int",
+                  "Welch segment length as a power of two. Longer segments "
+                  "resolve finer features and average fewer of them.",
+                  default=14),
+            Param("average", "bool",
+                  "Combine the files into one curve per channel.", default=False),
+            Param("max_points", "int", "Points per curve.", default=1500),
+        ) + BAND_PARAMS,
     ),
 
     # --- streaming --------------------------------------------------------
@@ -379,6 +607,9 @@ GROUPS = {
     "channel": "Channels",
     "trigger": "Trigger",
     "capture": "Block capture",
+    "sweep": "Scope (triggered sweeps)",
+    "daq": "DAQ mode",
+    "files": "Recordings library",
     "stream": "Streaming",
     "record": "Recording",
     "siggen": "Signal generator",

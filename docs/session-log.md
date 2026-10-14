@@ -8,6 +8,176 @@ Newest entries first. Keep entries short and factual; convert relative dates to 
 
 ---
 
+## 2026-10-14 — DAQ mode: the scope as a usphere DAQ, and a viewer for the files
+
+The scope can now be used the way `Moore-Lab/usphere-DAQ` uses its NI PXIe-6363: a record
+length as a power of two, a sample rate, a number of acquisitions, a root name — and each
+acquisition written as its own HDF5 file. **The files are usphere files**, not merely
+similar ones.
+
+**Read their repo first, and matched it rather than inventing.** `daq_h5.py` is the schema
+(version 3: `beads/data/pos_data`, 32 int16 rows, `Fsamp` / `Time` / voltage rails as
+attributes, `ai0..ai31`); `daq_core.py` is the acquisition loop (`2**n_bits` samples,
+`n_files` with 0 meaning until stopped, `{basename}_{index}.h5`); `daq_plot.py` is the
+viewer — Welch with `nperseg = 2**bits`, ASD as the root of the PSD, an optional Butterworth
+band-pass; and `coriolis_analysis.py` is where "averaged ASD" is defined: the mean of the
+**PSDs** across files, rooted at the end.
+
+**The one thing that could not be done as asked.** Their viewer is a PyQt5 + matplotlib
+widget, so it cannot be a tab in a web page. What is shared instead is everything
+underneath it — the file format and the conventions — and the sharing goes further in the
+other direction than a common module would have: `daq_plot.py` opens a file this scope
+recorded as it stands. That was checked by running their widget headless against one
+(`QT_QPA_PLATFORM=offscreen`): it marked `ai0`/`ai1` as recorded, drew both traces, and put
+the ASD peaks at 100 Hz and 200 Hz, which are the simulator's tones.
+
+**What was built**
+- `usphere_h5.py` — the schema, mirrored deliberately, GUI-free. Channel A is `ai0`. A
+  `PicoScope` module dataset carries the instrument, timebase, trigger and per-channel
+  ranges; the usphere reader ignores modules it does not know, so the file stays theirs.
+  `write_counts` scales the driver's counts straight into the file's counts, so a 2^22-sample
+  acquisition never needs a float copy of every sample. `rails_for` reports the schema's one
+  real limitation — one voltage range per file, so mixed channel ranges cost resolution.
+- `spectra.py` — Welch, ASD/PSD, PSD-space averaging, band-pass, and reductions that keep
+  the minimum and maximum of every bin (log-spaced for a spectrum), so a one-bin line
+  survives being drawn a thousand pixels wide.
+- `daq.py` — the run: plan, arm, capture, write, repeat. One folder per run, which is what
+  makes "average this run" a folder. **Nothing is ever overwritten** — found by a test, not
+  by luck: the folder stamp is only good to the second, so two runs started in the same
+  second shared a folder and the second wrote over the first. Files are written to `.part`
+  and renamed, so a half-written file never appears to a reader.
+- `library.py` — browsing and plotting saved files, with PSDs cached by file identity (a
+  hundred-file average is a hundred transforms, and the page re-asks on every checkbox) and
+  every path confined to the recordings folder, since the panel binds 0.0.0.0.
+- `loop.py` — the acquisition thread, extracted from `sweep.py` so sweeps and DAQ runs share
+  it: an interruptible capture, device changes applied between captures, and a stop that
+  works from either. Duplicating that would have meant duplicating its subtleties.
+- Eight commands: `daq-start`, `daq-stop`, `daq-status`, `daq-plan`, `daq-preview`, `files`,
+  `file-waveform`, `file-spectrum`. 42 in the registry now.
+- Page: **DAQ** and **Files** tabs. DAQ shows the plan before the run (real rate, size,
+  duration, warnings), progress during it, and after each acquisition that file's waveform
+  and ASD with the run's averaged ASD overlaid. Files browses the runs, overlays several
+  files or averages a whole one, picks channels, switches ASD/PSD, log axes and band-pass.
+  Both use a new general plotter with logarithmic axes.
+
+**Three things DAQ mode refuses to do quietly**, because each ruins a dataset silently: it
+records the rate the timebase actually gave (not the one typed, and `daq-plan` says when
+they differ); it refuses channel, range, generator and trigger changes while a run is in
+progress, so every file in a run was taken the same way; and it flags mixed channel ranges
+rather than writing the narrow one against wide rails.
+
+**Verified.** 126 tests. The arithmetic is checked against physics, not just itself: a
+1.5 V tone integrates to 1.0607 V rms in the PSD (1.5/√2), the noise floor lands within 3 %
+of σ/√(fs/2), and averaging three files cuts the floor's scatter by √3. `welch_psd` is
+asserted bit-identical to the call `daq_plot.py` makes. A mutation pass broke eight things
+on purpose — numpy attrs back in the JSON, averaging in ASD space, the path guard, spectral
+decimation by first-point, the folder collision, overwriting a named folder, writing the
+requested rate instead of the real one, and letting the scope change under a run — and each
+was caught. In the browser: a run recorded and drawn, the folder browsed, three files
+overlaid and then averaged into one curve.
+
+**Fixed on the way.** h5py returns attributes as numpy scalars, which `json.dumps` refuses,
+so listing a folder of our own files 500'd — found by clicking, not by reading. The
+`[hidden]` trap that had already bitten this page twice bit a third time (the band-pass
+row), so there is now one global rule for it. Checkbox labels stacked their box above the
+text. Three files of one channel all drew in the same colour.
+
+**Not yet done:** none of this has run on the physical 4824A. Worth measuring there: the
+real file-to-file dead time over USB 2.0 at 2^20 samples, and whether long low-rate blocks
+(a 2^20 record at 10 kS/s is 105 s inside one capture) behave as well on the driver as they
+do on the simulator.
+
+
+## 2026-09-16 — Scope mode: auto / normal / single triggered sweeps
+
+The web page can now be used like a bench scope: it arms, waits for its trigger, captures
+the window around it and repeats, so a repetitive signal stands still. The streaming view
+is still there, as **Roll**.
+
+**Measured on the rig first, then designed.** The live panel was holding the unit, idle, so
+its existing `trigger-set` and `capture` commands were used to probe the real driver before
+anything was built. The probe only touched inputs, and the trigger was restored exactly as
+found. Channel A had no signal on it: just 1.4 mV rms of noise around −2.5 mV, quantised
+in ~2.9 mV steps.
+- The trigger event lands **exactly** at the pre-trigger index (a rare falling edge fired
+  with its crossing at sample 2000 of a 2000-sample pre-trigger).
+- The auto timer is honoured to within ~30 ms (300 → 333 ms, 1000 → 1023 ms), and it starts
+  **only after the pre-trigger buffer fills**. A 4 s sweep with 2 s of pre-trigger took
+  4.64 s at 500 ms auto and 7.63 s at 3.5 s auto: pre + auto + post, not max(pre, auto) +
+  post.
+- The simple trigger has **hysteresis**, bracketed at about 5.1–6.4 mV on ±5 V. A rising
+  level 3σ into the noise never fired, although the buffer held 15 software crossings. A
+  level at the noise mean auto-triggered at the timeout with a software crossing at sample
+  1999, one sample from the trigger index.
+
+So "was this sweep triggered?" is decided by **timing** (`scope.classify_trigger`): the
+armed wait is the elapsed time less the collection time, and the capture auto-triggered iff
+that wait reached the timeout. A crossing test on the data would have mislabelled the last
+case above. The unit tests pin the rule to these measured numbers.
+
+**What was built**
+- `sweep.py` — `SweepSession`, the scope loop on its own thread: `SweepConfig` (mode, source,
+  level, direction, time/div over 10 divisions, trigger position %, samples, auto timeout —
+  automatic is the longer of 200 ms and one sweep), per-bin min/max `envelope` for transport,
+  and `measure` (Vpp, mean, RMS, and a frequency from a Schmitt trigger that is reported only
+  for ≥ 2 regular cycles well clear of quantisation noise). A settings change interrupts a
+  waiting capture, which re-arms at once. Device changes from other threads go through
+  `run_on_loop` and are applied between captures, because a normal-mode capture can wait
+  forever and the device object is not thread-safe. The indicator is the bench-scope corner
+  status: trig'd / auto / wait / armed / free-run / stop / error. The loop is capped at 100
+  sweeps/s.
+- `scope.capture_block` — cancellable (`CaptureCancelled`, after `ps4000aStop`), reports
+  `trigger_index` / `triggered` / `wait_s`, and has a **wall-clock timeout**. The old loop
+  added 1 ms per `Event.wait(0.001)`, which sleeps ~14 ms on Windows (measured), so a "10 s"
+  timeout ran for about 140 s. It now polls with `time.sleep`, which honours ~1.5 ms.
+- `sim.py` — trigger-aware block capture, following the measured behaviour: arm after the
+  pre-trigger fill, find the next crossing of the clean signal (coarse search over one
+  period, then bisection), honour the auto timeout, wait indefinitely in normal mode until
+  cancelled, and pace to the wall clock. The trigger is ideal, so simulated sweeps stand
+  perfectly still.
+- Controller: five commands — `sweep-start`, `sweep-stop`, `sweep-set`, `sweep-trace`
+  (`since` skips sweeps already seen), `sweep-save` (every sample, time measured from the
+  trigger). **One acquisition at a time**: sweeps, streaming and one-shot captures each refuse
+  while another runs, and `trigger-set` refuses while the scope owns the trigger. Channel,
+  signal-generator, LED and preset changes are routed through the sweep thread. Shutdown and
+  close stop the sweeps first. Presets carry the scope settings. Saved sweeps are listed
+  with the recordings.
+- Registry: the sweep settings have **no defaults** on purpose. The CLI only forwards the
+  flags you typed, so `sweep-set --level 0.8` moves the level and nothing else.
+- CLI: `--help` crashed on any `%` in registry text (argparse %-formats help strings), and
+  the new `position [%]` unit hit it. The renderer now escapes `%`; every subcommand's
+  `--help` was checked.
+- Page: **Scope | Roll** switch. It follows the instrument: another client starting a stream
+  flips the page to Roll. Switching stops the other mode, but never a running recording.
+  Run / Single / Stop / Save sweep. Trigger panel: mode, source, edge, level, auto timeout.
+  Timebase panel: time/div 100 ns–1 s, samples, position. A 10×8 graticule with centre
+  ticks. **Draggable** level flag (right edge) and trigger-position marker (top edge). The
+  display window comes from the current settings, so a stopped sweep pans and zooms with the
+  controls. The legend and the measurement table show Vpp and frequency.
+- Also fixed on the page: channel rows declared four grid columns for five cells, so every
+  coupling select wrapped under its checkbox. An error in the header is now held for 5 s
+  instead of being overwritten by the 700 ms status line within a poll. `sweep_rate_hz` now
+  decays while a normal-mode scope waits, instead of repeating the last rate.
+
+**Verified.** 52 tests (`test_sweep.py`, and `test_capture_block.py`, which drives the real
+`PicoScope4824A.capture_block` through a stand-in for `ps4000a.dll`) plus parity. A mutation
+pass broke ten things on purpose — cancel ignored, timeout never firing, the classification
+rule, configure not waking the loop, `run_on_loop` not waking it, shutdown not stopping it,
+single never stopping, the simulator ignoring the trigger, streaming allowed while sweeping,
+envelope decimating by stepping — and each was caught. In the browser, standalone and inside
+the DAQ panel: Run, a real-mouse drag of the level flag (the trace re-phased to cross the new
+level at t = 0), Normal + unreachable level → Wait with the sweep frozen, Auto → untriggered
+sweeps at the 200 ms timeout, falling edge, 5 ms/div (100 Hz measured), 10 % position,
+Single, re-Run, trigger source switched off → a clear error, then on → triggered on B, and
+Scope ↔ Roll, including the refusal while recording. Every CLI example in the README was
+run against a server.
+
+**Not yet done:** the sweep loop has not run on the physical unit. The live panel holds it
+and runs the previous code, so that needs a panel restart. Worth checking there: the
+threshold conversion ignores a channel's analogue offset (as the whole codebase does), and
+the real sweep rate over USB 2.0.
+
+
 ## 2026-09-09 (later) — Envelope band fix; README
 
 - **The envelope band was painting flat opaque grey** (`181d370`). `COLORS` held 3-digit

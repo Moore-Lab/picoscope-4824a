@@ -19,11 +19,50 @@
   <button id="btn-open">Connect</button>
   <button id="btn-close" class="ghost" disabled>Disconnect</button>
   <span class="sep"></span>
-  <button id="btn-stream" disabled>Start stream</button>
-  <button id="btn-stream-stop" class="ghost" disabled>Stop stream</button>
+  <!-- The device does one acquisition at a time, so the two views are two
+       modes of the instrument, not two tabs onto the same data. -->
+  <div class="seg" role="radiogroup" aria-label="Acquisition mode">
+    <button type="button" class="seg-btn" id="view-scope" role="radio"
+            aria-checked="true"
+            title="Triggered sweeps: a repetitive signal stands still, like a bench scope">Scope</button>
+    <button type="button" class="seg-btn" id="view-roll" role="radio"
+            aria-checked="false"
+            title="Continuous streaming: long monitoring and recording to disk">Roll</button>
+    <button type="button" class="seg-btn" id="view-daq" role="radio"
+            aria-checked="false"
+            title="Record fixed-length acquisitions as usphere-DAQ HDF5 files">DAQ</button>
+    <button type="button" class="seg-btn" id="view-files" role="radio"
+            aria-checked="false"
+            title="Browse saved files: waveforms, ASD, averages">Files</button>
+  </div>
   <span class="sep"></span>
-  <button id="btn-record" class="warn" disabled>Record</button>
-  <button id="btn-record-stop" class="ghost" disabled>Stop recording</button>
+  <span class="group" data-view="scope">
+    <button id="btn-run" disabled title="Sweep continuously">Run</button>
+    <button id="btn-single" class="ghost" disabled title="Capture one triggered sweep, then stop">Single</button>
+    <button id="btn-halt" class="ghost" disabled>Stop</button>
+    <span class="sep"></span>
+    <button id="btn-save-sweep" class="ghost" disabled
+            title="Write the sweep on screen, every sample, to the recordings folder">Save sweep</button>
+  </span>
+  <span class="group" data-view="roll" hidden>
+    <button id="btn-stream" disabled>Start stream</button>
+    <button id="btn-stream-stop" class="ghost" disabled>Stop stream</button>
+    <span class="sep"></span>
+    <button id="btn-record" class="warn" disabled>Record</button>
+    <button id="btn-record-stop" class="ghost" disabled>Stop recording</button>
+  </span>
+  <span class="group" data-view="daq" hidden>
+    <button id="btn-daq" disabled title="Record the run described in the sidebar">Start run</button>
+    <button id="btn-daq-stop" class="ghost" disabled>Stop</button>
+    <span class="sep"></span>
+    <span class="sub" id="daq-progress"></span>
+  </span>
+  <span class="group" data-view="files" hidden>
+    <button id="btn-files-refresh" class="ghost">Refresh</button>
+    <button id="btn-files-plot">Plot selected</button>
+    <span class="sep"></span>
+    <span class="sub" id="files-note"></span>
+  </span>
   <span class="grow"></span>
   <span class="sub" id="disk"></span>
 </div>
@@ -34,22 +73,176 @@
 
 <main>
   <section class="plot-wrap">
-    <canvas id="plot"></canvas>
+    <canvas id="plot" aria-label="Oscilloscope display"></canvas>
+    <canvas id="plot2" aria-label="Spectrum" hidden></canvas>
     <div class="plot-legend" id="legend"></div>
-    <div class="plot-note sub" id="plotnote">
-      Live min/max envelope. A transient shorter than one bin still shows,
-      because each bin keeps both extremes.
-    </div>
+    <div class="plot-note sub" id="plotnote"></div>
   </section>
 
   <aside>
 
-    <details open>
+    <details open data-view="scope,roll,daq">
       <summary>Channels</summary>
       <div id="channels" class="channels"></div>
     </details>
 
-    <details open>
+    <details open data-view="files" hidden>
+      <summary>Channels</summary>
+      <div id="f-channels" class="channels"></div>
+    </details>
+
+    <details open data-view="scope">
+      <summary>Trigger</summary>
+      <div class="seg seg-wide" id="t-mode" role="radiogroup" aria-label="Trigger mode">
+        <button type="button" class="seg-btn" data-mode="auto" role="radio"
+                title="Capture anyway if no trigger arrives in time, so the trace never freezes">Auto</button>
+        <button type="button" class="seg-btn" data-mode="normal" role="radio"
+                title="Capture only on a trigger; hold the last sweep meanwhile">Normal</button>
+        <button type="button" class="seg-btn" data-mode="none" role="radio"
+                title="Trigger off: sweep continuously, unsynchronised">Free run</button>
+      </div>
+      <div class="grid">
+        <label>Source <select id="t-source"></select></label>
+        <label>Edge
+          <select id="t-dir">
+            <option value="RISING">Rising ↑</option>
+            <option value="FALLING">Falling ↓</option>
+            <option value="RISING_OR_FALLING">Either ↕</option>
+            <option value="ABOVE">Above level</option>
+            <option value="BELOW">Below level</option>
+          </select>
+        </label>
+        <label>Level (V) <input id="t-level" type="number" step="0.01" value="0"></label>
+        <label>Auto timeout
+          <select id="t-auto">
+            <option value="0" selected>automatic</option>
+            <option value="100">100 ms</option>
+            <option value="250">250 ms</option>
+            <option value="500">500 ms</option>
+            <option value="1000">1 s</option>
+            <option value="5000">5 s</option>
+            <option value="30000">30 s</option>
+          </select>
+        </label>
+      </div>
+      <div class="sub">Drag the <b>T</b> markers on the display to move the
+        level (right edge) or the trigger point (top edge).</div>
+    </details>
+
+    <details open data-view="scope">
+      <summary>Timebase</summary>
+      <div class="grid">
+        <label>Time / div <select id="tb-div"></select></label>
+        <label>Samples / sweep
+          <select id="tb-samples">
+            <option value="500">500</option>
+            <option value="1000">1 000</option>
+            <option value="2000" selected>2 000</option>
+            <option value="5000">5 000</option>
+            <option value="10000">10 000</option>
+            <option value="50000">50 000</option>
+            <option value="100000">100 000</option>
+          </select>
+        </label>
+        <label class="span2">
+          <span>Trigger position <span class="val" id="tb-pos-val">50 %</span></span>
+          <input id="tb-pos" type="range" min="0" max="100" step="1" value="50">
+        </label>
+      </div>
+      <div id="tb-plan" class="plan"></div>
+    </details>
+
+    <details open data-view="daq" hidden>
+      <summary>Acquisition</summary>
+      <div class="grid">
+        <label>Sample rate (Hz)
+          <input id="d-rate" type="number" value="10000" min="1" step="1000">
+        </label>
+        <label>Samples = 2^N
+          <input id="d-bits" type="number" value="20" min="2" max="25" step="1">
+        </label>
+        <label class="span2"><span>Record <span class="val" id="d-length"></span></span></label>
+        <label>Acquisitions
+          <input id="d-files" type="number" value="1" min="0" step="1"
+                 title="0 runs until stopped">
+        </label>
+        <label>Root name <input id="d-name" value="run"></label>
+        <label class="span2">Folder (optional)
+          <input id="d-dir" placeholder="a new folder per run">
+        </label>
+      </div>
+      <div id="d-plan" class="plan"></div>
+    </details>
+
+    <details data-view="daq" hidden>
+      <summary>Trigger (optional)</summary>
+      <div class="seg seg-wide" id="d-trigger" role="radiogroup" aria-label="DAQ trigger">
+        <button type="button" class="seg-btn" data-mode="off" role="radio"
+                aria-checked="true" title="Record back to back, as the NI DAQ does">Off</button>
+        <button type="button" class="seg-btn" data-mode="auto" role="radio"
+                aria-checked="false" title="Wait for a trigger, record anyway after the timeout">Auto</button>
+        <button type="button" class="seg-btn" data-mode="normal" role="radio"
+                aria-checked="false" title="Wait for a trigger, however long it takes">Normal</button>
+      </div>
+      <div class="grid">
+        <label>Source <select id="d-source"></select></label>
+        <label>Edge
+          <select id="d-dir-edge">
+            <option value="RISING">Rising ↑</option>
+            <option value="FALLING">Falling ↓</option>
+            <option value="RISING_OR_FALLING">Either ↕</option>
+            <option value="ABOVE">Above level</option>
+            <option value="BELOW">Below level</option>
+          </select>
+        </label>
+        <label>Level (V) <input id="d-level" type="number" step="0.01" value="0"></label>
+        <label>Pre-trigger (%) <input id="d-pre" type="number" value="0" min="0" max="100"></label>
+      </div>
+    </details>
+
+    <details open data-view="daq" hidden>
+      <summary>Run</summary>
+      <div id="d-status" class="plan"></div>
+      <div class="row">
+        <label class="sub"><input type="checkbox" id="d-average" checked>
+          overlay the run's averaged ASD</label>
+      </div>
+    </details>
+
+    <details open data-view="files" hidden>
+      <summary>Folder</summary>
+      <div id="f-path" class="sub"></div>
+      <div id="f-folders" class="filelist"></div>
+      <div id="f-files" class="filelist"></div>
+    </details>
+
+    <details open data-view="files" hidden>
+      <summary>Plot</summary>
+      <div class="grid">
+        <label>Spectrum
+          <select id="f-kind">
+            <option value="asd" selected>ASD (V/√Hz)</option>
+            <option value="psd">PSD (V²/Hz)</option>
+          </select>
+        </label>
+        <label>Welch 2^N
+          <input id="f-bits" type="number" value="14" min="6" max="22" step="1">
+        </label>
+        <label class="span2"><span>Segment <span class="val" id="f-seg"></span></span></label>
+        <label class="sub check"><input type="checkbox" id="f-average"> average the folder</label>
+        <label class="sub check"><input type="checkbox" id="f-logx" checked> log frequency</label>
+        <label class="sub check"><input type="checkbox" id="f-logy" checked> log amplitude</label>
+        <label class="sub check"><input type="checkbox" id="f-band"> band-pass</label>
+      </div>
+      <div class="grid" id="f-band-row" hidden>
+        <label>f low (Hz) <input id="f-flow" type="number" value="10" min="0"></label>
+        <label>f high (Hz) <input id="f-fhigh" type="number" value="1000" min="0"></label>
+        <label>Order <input id="f-order" type="number" value="3" min="1" max="10"></label>
+      </div>
+      <div id="f-plan" class="plan"></div>
+    </details>
+
+    <details open data-view="roll" hidden>
       <summary>Streaming</summary>
       <div class="grid">
         <label>Raw rate
@@ -95,7 +288,7 @@
       <div id="plan" class="plan"></div>
     </details>
 
-    <details open>
+    <details open data-view="roll" hidden>
       <summary>Recording</summary>
       <div class="grid">
         <label>Name <input id="r-name" value="stream"></label>
@@ -144,7 +337,7 @@
         into an input to exercise the whole acquisition chain.</div>
     </details>
 
-    <details>
+    <details open data-view="scope,roll,daq">
       <summary>Measurements</summary>
       <table id="measure"><tbody></tbody></table>
     </details>

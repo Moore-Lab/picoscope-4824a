@@ -31,12 +31,20 @@ What it fakes, and how honestly:
 * **Limits.** The same 4 Vpp / 1 MHz signal-generator ceilings and the same
   80/40 MS/s channel-count rule, so code that respects the simulator respects
   the instrument.
+* **Triggering.** Block captures honour the simple trigger the way the rig's
+  4824A was measured to: the pre-trigger buffer fills first, *then* the capture
+  arms and the auto timer starts; the trigger event lands exactly at the
+  pre-trigger index; with no auto timer it waits until cancelled. The trigger
+  is ideal — it fires on the noise-free signal, as if the hardware hysteresis
+  were wider than the noise — so a triggered display holds perfectly still.
+  Captures are paced to the wall clock, so a 1 s sweep takes 1 s.
 """
 
 from __future__ import annotations
 
 import math
 import threading
+import time
 from time import perf_counter
 from typing import Optional
 
@@ -45,7 +53,7 @@ import numpy as np
 from . import ps4000a as ps
 from .ps4000a import (Channel, Coupling, PicoError, RatioMode, Range,
                       ThresholdDirection, WaveType)
-from .scope import Capture, ChannelConfig, TriggerConfig
+from .scope import Capture, CaptureCancelled, ChannelConfig, TriggerConfig
 
 SIM_SERIAL = "SIM0/0001"
 
@@ -214,26 +222,153 @@ class SimScope:
 
     # --- signal synthesis -------------------------------------------------
 
-    def _waveform(self, channel: Channel, n: int, t0: float,
-                  interval_s: float) -> np.ndarray:
-        """Synthetic ADC counts for *n* samples of *channel* starting at *t0*."""
-        cfg = self.channels[channel]
-        full = cfg.voltage_range.volts
-        t = t0 + np.arange(n, dtype=np.float64) * interval_s
-
+    def _clean_volts(self, channel: Channel, t: np.ndarray) -> np.ndarray:
+        """The noise-free signal on *channel* at times *t*, in volts."""
         if channel is Channel.A and self._siggen["on"]:
             amp = self._siggen["amplitude_vpp"] / 2.0
             freq = self._siggen["frequency_hz"]
-            volts = amp * _wave(self._siggen["wave"], freq, t) + self._siggen["offset_v"]
-        else:
-            # A distinct, recognisable tone per channel: 100 Hz × (index + 1).
-            freq = 100.0 * (int(channel) + 1)
-            amp = full * 0.3
-            volts = amp * np.sin(2 * math.pi * freq * t)
+            return amp * _wave(self._siggen["wave"], freq, t) + self._siggen["offset_v"]
+        # A distinct, recognisable tone per channel: 100 Hz × (index + 1).
+        full = self.channels[channel].voltage_range.volts
+        return full * 0.3 * np.sin(2 * math.pi * 100.0 * (int(channel) + 1) * t)
 
+    def _source_period(self, channel: Channel) -> Optional[float]:
+        """Period of the clean signal: ``inf`` if constant, ``None`` if noise."""
+        if channel is Channel.A and self._siggen["on"]:
+            wave = self._siggen["wave"]
+            if wave is WaveType.WHITE_NOISE:
+                return None
+            freq = self._siggen["frequency_hz"]
+            if wave is WaveType.DC_VOLTAGE or freq <= 0:
+                return math.inf
+            return 1.0 / freq
+        return 1.0 / (100.0 * (int(channel) + 1))
+
+    def _waveform(self, channel: Channel, n: int, t0: float,
+                  interval_s: float) -> np.ndarray:
+        """Synthetic ADC counts for *n* samples of *channel* starting at *t0*."""
+        full = self.channels[channel].voltage_range.volts
+        t = t0 + np.arange(n, dtype=np.float64) * interval_s
+        volts = self._clean_volts(channel, t)
         volts = volts + np.random.normal(0.0, full * 0.002, n)
         counts = np.clip(volts / full * ps.MAX_ADC, -ps.MAX_ADC, ps.MAX_ADC)
         return counts.astype(np.int16)
+
+    # --- trigger search -----------------------------------------------------
+
+    def _next_trigger(self, trig: TriggerConfig, t_from: float,
+                      limit_s: Optional[float]) -> Optional[float]:
+        """Time of the first trigger event at or after *t_from*, or ``None``.
+
+        *limit_s* bounds the search (the auto timeout); ``None`` means "as far
+        as it takes" — which for a periodic signal is one period, because a
+        crossing that exists at all recurs within every period. Searched on the
+        clean signal: coarse over the window, then bisected to well below a
+        sample, so the event sits exactly at the pre-trigger index.
+        """
+        ch, level, direction = trig.source, trig.threshold_volts, trig.direction
+        period = self._source_period(ch)
+
+        if period is None:                          # generator white noise
+            amp = self._siggen["amplitude_vpp"] / 2.0
+            off = self._siggen["offset_v"]
+            if not (off - amp < level < off + amp):
+                return None
+            # Noise crosses any level inside its span almost at once. (The
+            # capture draws fresh noise, so it will not show this exact edge.)
+            return t_from + float(np.random.uniform(0.0, 1e-4))
+
+        if math.isinf(period):                      # a constant level
+            v = float(self._clean_volts(ch, np.array([t_from]))[0])
+            if direction is ThresholdDirection.ABOVE:
+                return t_from if v > level else None
+            if direction is ThresholdDirection.BELOW:
+                return t_from if v < level else None
+            return None                             # a constant has no edges
+
+        horizon = period * 1.02
+        if limit_s is not None:
+            horizon = min(horizon, limit_s)
+        n = int(min(200_000, max(64, 4096 * horizon / period)))
+        t = t_from + np.linspace(0.0, horizon, n)
+        v = self._clean_volts(ch, t)
+
+        def rising(a, b):
+            return (a < level) & (b >= level)
+
+        def falling(a, b):
+            return (a > level) & (b <= level)
+
+        if direction is ThresholdDirection.ABOVE:
+            hits = np.nonzero(v > level)[0]
+            if not hits.size:
+                return None
+            i = int(hits[0])
+            if i == 0:
+                return t_from
+            return self._bisect(ch, t[i - 1], t[i], lambda x: x > level)
+        if direction is ThresholdDirection.BELOW:
+            hits = np.nonzero(v < level)[0]
+            if not hits.size:
+                return None
+            i = int(hits[0])
+            if i == 0:
+                return t_from
+            return self._bisect(ch, t[i - 1], t[i], lambda x: x < level)
+
+        a, b = v[:-1], v[1:]
+        if direction is ThresholdDirection.FALLING:
+            mask = falling(a, b)
+        elif direction is ThresholdDirection.RISING_OR_FALLING:
+            mask = rising(a, b) | falling(a, b)
+        else:                                       # RISING (and its NONE alias)
+            mask = rising(a, b)
+        hits = np.nonzero(mask)[0]
+        if not hits.size:
+            return None
+        i = int(hits[0])
+        went_up = v[i] < level
+        return self._bisect(ch, t[i], t[i + 1],
+                            (lambda x: x >= level) if went_up
+                            else (lambda x: x <= level))
+
+    def _bisect(self, ch: Channel, lo: float, hi: float, fired) -> float:
+        """Earliest time in (lo, hi] where *fired* holds, to ~1e-15 of the span."""
+        for _ in range(48):
+            mid = 0.5 * (lo + hi)
+            if fired(float(self._clean_volts(ch, np.array([mid]))[0])):
+                hi = mid
+            else:
+                lo = mid
+        return hi
+
+    @staticmethod
+    def _sleep_until(t_target: Optional[float], t_start: float,
+                     timeout_s: Optional[float],
+                     cancel: Optional[threading.Event]) -> None:
+        """Wait for the wall clock to reach *t_target* (``None``: forever).
+
+        Raises :class:`CaptureCancelled` if *cancel* is set, or the driver's
+        timeout error if *timeout_s* runs out first — the same two exits a
+        real block capture has.
+        """
+        deadline = None if timeout_s is None else t_start + float(timeout_s)
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise CaptureCancelled("block capture cancelled")
+            now = perf_counter()
+            if t_target is not None and now >= t_target:
+                return
+            if deadline is not None and now >= deadline:
+                raise PicoError(0x3008, "capture_block",
+                                f"no capture within {timeout_s:g} s "
+                                "(waiting on a trigger that never came?)")
+            step = 0.005
+            if t_target is not None:
+                step = min(step, t_target - now)
+            if deadline is not None:
+                step = min(step, deadline - now)
+            time.sleep(max(0.0005, step))
 
     # --- block capture ----------------------------------------------------
 
@@ -241,11 +376,17 @@ class SimScope:
                       sample_rate_hz: Optional[float] = None,
                       timebase: Optional[int] = None,
                       pre_trigger_samples: int = 0,
-                      timeout_s: float = 10.0) -> Capture:
+                      timeout_s: Optional[float] = 10.0,
+                      cancel: Optional[threading.Event] = None) -> Capture:
         self._require_open()
         active = self.enabled_channels
         if not active:
             raise PicoError(0x10, "capture_block", "no channels are enabled")
+        pre = int(pre_trigger_samples)
+        post = int(n_samples) - pre
+        if pre < 0 or post < 1:
+            raise ValueError(f"pre_trigger_samples must be 0..{int(n_samples) - 1}, "
+                             f"got {pre}")
         if timebase is None:
             if sample_rate_hz is None:
                 raise ValueError("give sample_rate_hz or timebase")
@@ -253,15 +394,44 @@ class SimScope:
         else:
             interval_ns, _ = self.get_timebase(timebase, n_samples)
 
-        interval_s = interval_ns * 1e-9
-        t0 = perf_counter()
-        counts = {ch.label: self._waveform(ch, n_samples, t0, interval_s)
+        dt = interval_ns * 1e-9
+        t_run = perf_counter()
+        # The unit fills its pre-trigger buffer before it arms, and only then
+        # starts the auto timer (measured on the rig).
+        t_armed = t_run + pre * dt
+        trig = self.trigger
+        triggered: Optional[bool] = None
+        wait_s = 0.0
+        if trig.enabled:
+            auto_s = trig.auto_trigger_ms / 1000.0 if trig.auto_trigger_ms > 0 else None
+            t_hit = self._next_trigger(trig, t_armed, auto_s)
+            if t_hit is not None:
+                t_ref, triggered = t_hit, True
+            elif auto_s is not None:
+                t_ref, triggered = t_armed + auto_s, False
+            else:
+                # Normal mode on a signal that never meets the condition: the
+                # real unit waits indefinitely, so this waits for the exits.
+                self._sleep_until(None, t_run, timeout_s, cancel)
+                raise AssertionError("unreachable")     # _sleep_until raised
+            wait_s = t_ref - t_armed
+            t_ref += trig.delay_samples * dt
+        else:
+            t_ref = t_armed
+
+        self._sleep_until(t_ref + post * dt, t_run, timeout_s, cancel)
+
+        t_first = t_ref - pre * dt
+        counts = {ch.label: self._waveform(ch, n_samples, t_first, dt)
                   for ch in active}
         volts = {ch.label: ps.adc_to_volts(counts[ch.label].astype(np.float32),
                                            self.channels[ch].voltage_range)
                  for ch in active}
         return Capture(active, counts, volts, interval_ns, n_samples,
-                       {ch.label: False for ch in active})
+                       {ch.label: False for ch in active},
+                       trigger_index=(pre - trig.delay_samples
+                                      if trig.enabled else None),
+                       triggered=triggered, wait_s=wait_s, timebase=timebase)
 
     # --- streaming --------------------------------------------------------
 

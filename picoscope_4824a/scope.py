@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import time
 from ctypes import byref, c_float, c_int16, c_int32, c_uint32, create_string_buffer
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
@@ -113,6 +114,43 @@ class TriggerConfig:
         }
 
 
+class CaptureCancelled(Exception):
+    """A block capture was aborted from another thread before it completed.
+
+    Not an error: it is how a waiting capture is released — to stop, or to
+    re-arm with new settings. The driver has already been told to stop.
+    """
+
+
+def classify_trigger(trigger: "TriggerConfig", wait_s: Optional[float]) -> Optional[bool]:
+    """Did a block capture fire on its trigger, or on the auto timer?
+
+    ``None`` when the trigger was off. With no auto timer (``auto_trigger_ms``
+    of 0) the driver only returns on a trigger, so the answer is always yes.
+    Otherwise it is decided by **timing**: *wait_s* is how long the capture sat
+    armed, and it auto-triggered iff that reached the timeout.
+
+    Timing, never the waveform, and both halves of that were measured on the
+    rig's 4824A: the auto timer starts only once the pre-trigger buffer has
+    filled (4 s sweep, 2 s of it pre-trigger, 500 ms auto -> 4.64 s), so the
+    armed wait is elapsed time minus collection time; and the simple trigger
+    has hysteresis (roughly 5-6 mV on the ±5 V range), so a level inside the
+    noise band can show a software crossing exactly at the trigger index of a
+    capture the hardware never fired on. A crossing test would call that
+    capture triggered; the clock does not.
+
+    The cost is a sliver of misreporting: a real trigger in the last few tens of
+    milliseconds of the window (the capture's own USB overhead) reads as auto.
+    """
+    if not trigger.enabled:
+        return None
+    if trigger.auto_trigger_ms <= 0:
+        return True
+    if wait_s is None:
+        return None
+    return wait_s * 1000.0 < trigger.auto_trigger_ms
+
+
 @dataclass
 class Capture:
     """One block-mode capture: raw counts, volts, and the time axis."""
@@ -122,12 +160,30 @@ class Capture:
     interval_ns: float
     n_samples: int
     overflow: dict[str, bool] = field(default_factory=dict)
-    triggered_at: Optional[int] = None
+    #: Index of the trigger event in the buffer (the pre-trigger sample count,
+    #: less any trigger delay). ``None`` when the trigger was off.
+    trigger_index: Optional[int] = None
+    #: True if the trigger fired, False if the auto timer did, None if the
+    #: trigger was off — see :func:`classify_trigger`.
+    triggered: Optional[bool] = None
+    #: Seconds the capture sat armed, waiting for its trigger.
+    wait_s: Optional[float] = None
+    timebase: Optional[int] = None
 
     @property
     def time_s(self) -> np.ndarray:
         """Sample times in seconds, relative to the first sample."""
         return np.arange(self.n_samples, dtype=np.float64) * (self.interval_ns * 1e-9)
+
+    @property
+    def time_from_trigger_s(self) -> np.ndarray:
+        """Sample times relative to the trigger event (negative before it).
+
+        Falls back to :attr:`time_s` when there was no trigger.
+        """
+        offset = self.trigger_index or 0
+        return (np.arange(self.n_samples, dtype=np.float64) - offset) * (
+            self.interval_ns * 1e-9)
 
     def to_dict(self, include_data: bool = False, max_points: int = 2000) -> dict:
         """Summary dict; with *include_data* also carries decimated traces.
@@ -142,6 +198,9 @@ class Capture:
             "sample_rate_hz": 1e9 / self.interval_ns if self.interval_ns else 0.0,
             "duration_s": self.n_samples * self.interval_ns * 1e-9,
             "overflow": self.overflow,
+            "trigger_index": self.trigger_index,
+            "triggered": self.triggered,
+            "wait_s": self.wait_s,
         }
         if include_data:
             step = max(1, self.n_samples // max_points)
@@ -475,17 +534,29 @@ class PicoScope4824A:
                       sample_rate_hz: Optional[float] = None,
                       timebase: Optional[int] = None,
                       pre_trigger_samples: int = 0,
-                      timeout_s: float = 10.0) -> Capture:
+                      timeout_s: Optional[float] = 10.0,
+                      cancel: Optional[threading.Event] = None) -> Capture:
         """Run one block capture and return the data.
 
         Give either *sample_rate_hz* (converted to the nearest achievable
-        timebase) or an explicit *timebase*. Blocks until the capture completes
-        or *timeout_s* elapses.
+        timebase) or an explicit *timebase*. Blocks until the capture completes,
+        *timeout_s* elapses (``None`` waits indefinitely — a normal-mode trigger
+        that never comes), or *cancel* is set from another thread, which stops
+        the driver and raises :class:`CaptureCancelled`.
+
+        The trigger event lands at index ``pre_trigger_samples`` of the returned
+        buffer (verified on the rig), so :attr:`Capture.trigger_index` is exact.
         """
         self._require_open()
         active = self.enabled_channels
         if not active:
             raise PicoError(0x10, "capture_block", "no channels are enabled")
+
+        pre = int(pre_trigger_samples)
+        post = int(n_samples) - pre
+        if pre < 0 or post < 1:
+            raise ValueError(f"pre_trigger_samples must be 0..{int(n_samples) - 1}, "
+                             f"got {pre}")
 
         if timebase is None:
             if sample_rate_hz is None:
@@ -496,30 +567,38 @@ class PicoScope4824A:
 
         buffers = {ch: self._register_buffer(ch, n_samples)[0] for ch in active}
 
-        post = n_samples - pre_trigger_samples
         time_indisposed = c_int32(0)
+        t_run = time.perf_counter()
         status = self._lib.ps4000aRunBlock(
-            self._handle, c_int32(pre_trigger_samples), c_int32(post),
+            self._handle, c_int32(pre), c_int32(post),
             c_uint32(timebase), byref(time_indisposed), c_uint32(0),
             ps.BlockReady(0), None)
         ps.check(status, "ps4000aRunBlock")
 
+        # Poll with time.sleep, not Event.wait: on Windows a 1 ms Event.wait
+        # sleeps ~14 ms while time.sleep honours ~1.5 ms. The old loop counted
+        # each wait as 1 ms, so a "10 s" timeout ran for about 140 s. The
+        # deadline is now wall-clock, and the poll backs off for long sweeps
+        # rather than asking the driver thousands of times.
+        collect_s = int(n_samples) * interval_ns * 1e-9
+        poll_s = min(0.01, max(0.001, collect_s / 50))
+        deadline = None if timeout_s is None else t_run + float(timeout_s)
         ready = c_int16(0)
-        deadline = threading.Event()
-        waited = 0.0
-        step = 0.001
-        while not ready.value:
+        while True:
             ps.check(self._lib.ps4000aIsReady(self._handle, byref(ready)),
                      "ps4000aIsReady")
             if ready.value:
                 break
-            deadline.wait(step)
-            waited += step
-            if waited > timeout_s:
+            if cancel is not None and cancel.is_set():
+                self._lib.ps4000aStop(self._handle)
+                raise CaptureCancelled("block capture cancelled")
+            if deadline is not None and time.perf_counter() > deadline:
                 self._lib.ps4000aStop(self._handle)
                 raise PicoError(0x3008, "capture_block",
                                 f"no capture within {timeout_s:g} s "
                                 "(waiting on a trigger that never came?)")
+            time.sleep(poll_s)
+        elapsed = time.perf_counter() - t_run
 
         got = c_uint32(n_samples)
         overflow = c_int16(0)
@@ -537,7 +616,18 @@ class PicoScope4824A:
             for ch in active
         }
         over = {ch.label: bool(overflow.value & (1 << int(ch))) for ch in active}
-        return Capture(active, counts, volts, interval_ns, n, over)
+
+        # time_indisposed is the driver's own collection-time estimate (it
+        # excludes any trigger wait); take the larger of it and the arithmetic
+        # one so a zero from the driver cannot inflate the armed wait.
+        collect_s = max(time_indisposed.value / 1000.0, collect_s)
+        wait_s = max(0.0, elapsed - collect_s)
+        trig = self.trigger
+        return Capture(active, counts, volts, interval_ns, n, over,
+                       trigger_index=(pre - trig.delay_samples
+                                      if trig.enabled else None),
+                       triggered=classify_trigger(trig, wait_s),
+                       wait_s=wait_s, timebase=timebase)
 
     # --- streaming (raw driver calls; see streaming.py for the thread) -----
 
